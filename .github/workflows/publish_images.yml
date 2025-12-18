@@ -14,7 +14,8 @@ permissions:
   packages: write
 
 env:
-  DOCKER_IMAGE: brammys/necesse-server
+  # GHCR image name (owner/repo)
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -23,7 +24,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -46,21 +47,14 @@ jobs:
           fi
           url="https://necessegame.com/${rel}"
           fname=$(basename "$url")
-          # Strip prefix and suffix to get version-build, e.g. 1-0-1-20436084
           vb=${fname#necesse-server-linux64-}
           vb=${vb%.zip}
-          version=$(echo "$vb" | grep -Eo '^[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}')
+          version=$(echo "$vb" | sed -E 's/-[0-9]+$//' )
           build=$(echo "$vb" | grep -Eo '[0-9]+$')
           echo "Found: url=$url, version=$version, build=$build"
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -69,17 +63,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check if image already exists
+      - name: Check if image already exists on GHCR
         id: check
         shell: bash
         env:
           VERSION: ${{ steps.scrape.outputs.version }}
           BUILD: ${{ steps.scrape.outputs.build }}
+          IMAGE: ${{ env.GHCR_IMAGE }}
         run: |
           set -euo pipefail
           TAG="${VERSION}-${BUILD}"
-          if ! docker manifest inspect "${{ env.DOCKER_IMAGE }}:${TAG}" >/tmp/manifest.json 2>/dev/null; then
-            echo "Tag not found; will build."
+          if ! docker manifest inspect "${IMAGE}:${TAG}" >/tmp/manifest.json 2>/dev/null; then
+            echo "Tag not found on GHCR; will build."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -87,24 +82,23 @@ jobs:
             echo "Both amd64 and arm64 already present — skipping build."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Multi-arch not complete (will build/push for missing arch)."
+            echo "Multi-arch not complete (will build/push)."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Docker meta
+      - name: Docker meta (GHCR)
         id: meta
         uses: docker/metadata-action@v5
         if: steps.check.outputs.should_build == 'true'
         with:
           images: |
-            ${{ env.DOCKER_IMAGE }}
-            ghcr.io/${{ github.repository_owner }}/necesse-server
+            ${{ env.GHCR_IMAGE }}
           tags: |
             type=raw,value=latest
             type=raw,value=${{ steps.scrape.outputs.version }}
             type=raw,value=${{ steps.scrape.outputs.version }}-${{ steps.scrape.outputs.build }}
 
-      - name: Build and push images (Docker Hub + GHCR)
+      - name: Build and push images (GHCR)
         uses: docker/build-push-action@v6
         if: steps.check.outputs.should_build == 'true'
         with:
